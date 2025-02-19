@@ -5,6 +5,7 @@ import logging
 import argparse
 import json
 import uuid
+import time
 
 def setup_argparse():
     parser = argparse.ArgumentParser(description='Clean up disconnected Trend Micro endpoints.')
@@ -74,7 +75,7 @@ def is_valid_uuid(val):
         return False
 
 def remove_endpoints(api_key, endpoint_ids):
-    """Remove specified endpoints with error handling."""
+    """Remove specified endpoints with error handling and verification."""
     url = "https://api.xdr.trendmicro.com/v3.0/endpointSecurity/endpoints/delete"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -88,6 +89,9 @@ def remove_endpoints(api_key, endpoint_ids):
         print(f"⚠️  Warning: {invalid_count} invalid GUIDs were removed from the request")
         logging.warning(f"{invalid_count} invalid GUIDs were removed from the request")
     
+    successful_removals = 0
+    failed_removals = []
+    
     # Split into chunks of 100 to avoid API limits
     chunk_size = 100
     for i in range(0, len(valid_guids), chunk_size):
@@ -96,45 +100,69 @@ def remove_endpoints(api_key, endpoint_ids):
         
         try:
             response = requests.post(url, headers=headers, json=payload)
+            time.sleep(1)  # Add delay after deletion request
             
-            # Log the request details (only to file)
+            # Log the request details
             logging.info(f"Request URL: {url}")
             logging.info(f"Payload: {json.dumps(payload, indent=2)}")
             
-            # If there's an error, try to get detailed error message
-            if not response.ok:
+            if response.ok:
+                # Verify the removal by checking if endpoints still exist
+                verification_failures = []
+                for guid in chunk:
+                    verify_url = f"https://api.xdr.trendmicro.com/v3.0/endpointSecurity/endpoints/{guid}"
+                    try:
+                        verify_response = requests.get(verify_url, headers=headers)
+                        time.sleep(0.2)  # Add delay between verification requests
+                        if verify_response.status_code == 404:
+                            successful_removals += 1
+                        else:
+                            verification_failures.append(guid)
+                            failed_removals.append(guid)
+                    except requests.exceptions.RequestException as e:
+                        logging.error(f"Verification failed for GUID {guid}: {str(e)}")
+                        verification_failures.append(guid)
+                        failed_removals.append(guid)
+                
+                if verification_failures:
+                    logging.warning(f"Failed to verify removal of {len(verification_failures)} endpoints in chunk")
+                    print(f"⚠️  Warning: {len(verification_failures)} endpoints may not have been removed properly")
+            else:
                 try:
                     error_json = response.json()
-                    if 'error' in error_json:
-                        error = error_json['error']
-                        error_msg = (f"Error removing agents {i} to {i+len(chunk)}\n"
-                                   f"Status code: {response.status_code}\n"
-                                   f"Error code: {error.get('code')}\n"
-                                   f"Message: {error.get('message')}\n"
-                                   f"Inner error: {error.get('innererror', {}).get('message', 'None')}\n"
-                                   f"Trace ID: {error.get('innererror', {}).get('code', 'None')}")
-                    else:
-                        error_msg = (f"Error removing agents {i} to {i+len(chunk)}\n"
-                                   f"Status code: {response.status_code}\n"
-                                   f"Error details: {error_json}")
+                    error = error_json.get('error', {})
+                    error_msg = (f"Error removing agents {i} to {i+len(chunk)}\n"
+                               f"Status code: {response.status_code}\n"
+                               f"Error code: {error.get('code')}\n"
+                               f"Message: {error.get('message')}\n"
+                               f"Inner error: {error.get('innererror', {}).get('message', 'None')}\n"
+                               f"Trace ID: {error.get('innererror', {}).get('code', 'None')}")
                 except ValueError:
                     error_msg = (f"Error removing agents {i} to {i+len(chunk)}\n"
-                                f"Status code: {response.status_code}\n"
-                                f"Error details: {response.text or 'No error details available'}")
+                               f"Status code: {response.status_code}\n"
+                               f"Error details: {response.text or 'No error details available'}")
                 
                 logging.error(error_msg)
                 print(f"❌ {error_msg}")
-                return False
-            
-            print(f"✅ Successfully removed {len(chunk)} agents")
-            logging.info(f"Successfully removed {len(chunk)} agents")
-            
+                failed_removals.extend(chunk)
+                
         except requests.exceptions.RequestException as e:
             error_msg = f"Request failed: {str(e)}"
             logging.error(error_msg)
             print(f"❌ {error_msg}")
-            return False
-    return True
+            failed_removals.extend(chunk)
+    
+    # Final summary
+    if successful_removals > 0:
+        print(f"✅ Successfully removed and verified {successful_removals} agents")
+        logging.info(f"Successfully removed and verified {successful_removals} agents")
+    
+    if failed_removals:
+        print(f"❌ Failed to remove {len(failed_removals)} agents")
+        logging.error(f"Failed to remove the following GUIDs: {json.dumps(failed_removals, indent=2)}")
+        return False
+    
+    return successful_removals > 0
 
 def main():
     # Setup argument parser

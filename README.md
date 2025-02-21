@@ -5,7 +5,7 @@ A Python script to identify and remove disconnected endpoints from Trend Micro V
 ## Description
 
 This script processes Trend Micro Vision One endpoints and identifies candidates for removal based on the following criteria:
-- Hostname starts with "ip-"
+- Hostname starts with "ec2-"
 - EDR sensor status is "disconnected"
 - Has been disconnected longer than the specified number of days (argument)
 

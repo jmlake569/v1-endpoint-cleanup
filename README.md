@@ -39,12 +39,13 @@ The script requires a Trend Micro Vision One API key, which can be provided in t
 
 Run the script with optional arguments:
 ```bash
-python endpoint_cleanup.py [--api-key API_KEY] [--days DAYS]
+python endpoint_cleanup.py [--api-key API_KEY] [--days DAYS] [--dry-run]
 ```
 
 Arguments:
 - `--api-key`: Trend Micro Vision One API key (optional if set in environment)
 - `--days`: Number of days to look back for disconnected endpoints (default: 7)
+- `--dry-run`: Perform a dry run to see what would be removed without making any changes
 
 Examples:
 ```bash
@@ -54,16 +55,25 @@ python endpoint_cleanup.py
 # Look back 30 days
 python endpoint_cleanup.py --days 30
 
-# Specify both API key and days
-python endpoint_cleanup.py --api-key your-key-here --days 14
+# Perform a dry run with 14 days lookback
+python endpoint_cleanup.py --days 14 --dry-run
+
+# Specify API key and perform dry run
+python endpoint_cleanup.py --api-key your-key-here --dry-run
 ```
 
 The script will:
 1. Process all endpoints
 2. Log detailed information to a timestamped file in the `logs` directory
 3. Display a summary in the terminal
-4. Show eligible endpoints for removal
-5. Prompt for confirmation before removing any endpoints
+4. In dry run mode:
+   - Show eligible endpoints that would be removed
+   - No actual changes are made
+   - Provide detailed logging for review
+5. In normal mode:
+   - Show eligible endpoints for removal
+   - Prompt for confirmation before removing any endpoints
+   - Execute removal if confirmed
 
 ## Output
 
@@ -71,8 +81,12 @@ The script will:
 - Summary of processed endpoints
 - Count of eligible and ineligible endpoints
 - Location of detailed log file
-- Confirmation prompts with endpoint details
-- Removal status updates
+- In dry run mode:
+  - List of endpoints that would be removed
+  - No confirmation prompt
+- In normal mode:
+  - Confirmation prompts with endpoint details
+  - Removal status updates
 
 ### Log File
 - Detailed information about each endpoint processed
@@ -80,7 +94,7 @@ The script will:
 - Complete operation history
 - API request payloads and responses
 - Summary information
-- List of eligible endpoints not removed (if removal was cancelled)
+- List of eligible endpoints (removed or not, depending on mode)
 
 ## Log Files
 

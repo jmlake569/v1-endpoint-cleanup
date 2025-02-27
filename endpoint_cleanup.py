@@ -11,6 +11,7 @@ def setup_argparse():
     parser = argparse.ArgumentParser(description='Clean up disconnected Trend Micro endpoints.')
     parser.add_argument('--api-key', help='Trend Micro Vision One API key (optional if set in environment)')
     parser.add_argument('--days', type=int, default=7, help='Number of days to look back for disconnected endpoints (default: 7)')
+    parser.add_argument('--dry-run', action='store_true', help='Perform a dry run without actually removing endpoints')
     return parser
 
 def setup_logging():
@@ -46,14 +47,37 @@ HEADERS = {
 }
 
 def get_disconnected_agents():
+    """Get all agents using pagination."""
+    all_items = []
+    next_link = API_URL
+    
     try:
-        # Remove the PARAMS filter since we'll handle filtering in our code
-        response = requests.get(API_URL, headers=HEADERS)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("items", [])
+        while next_link:
+            logging.info(f"Fetching data from: {next_link}")
+            response = requests.get(next_link, headers=HEADERS)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Add items from current page
+            items = data.get("items", [])
+            all_items.extend(items)
+            
+            # Check for next page using nextLink from JSON response
+            next_link = data.get("nextLink")
+            
+            # Add a small delay between requests
+            if next_link:
+                time.sleep(1)
+                
+            logging.info(f"Retrieved {len(items)} items. Total so far: {len(all_items)}")
+            
+        logging.info(f"Completed fetching all {len(all_items)} items")
+        return all_items
+        
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching data: {e}")
+        error_msg = f"Error fetching data: {str(e)}"
+        logging.error(error_msg)
+        print(f"❌ {error_msg}")
         return []
 
 def confirm_removal(agents, agent_guids):
@@ -96,21 +120,23 @@ def remove_endpoints(api_key, endpoint_ids):
     chunk_size = 100
     for i in range(0, len(valid_guids), chunk_size):
         chunk = valid_guids[i:i + chunk_size]
-        payload = [{"agentGuid": str(guid)} for guid in chunk]
+        # Make sure we're sending the payload in the correct format
+        payload = {"agentGuids": [{"agentGuid": str(guid)} for guid in chunk]}
         
         try:
-            response = requests.post(url, headers=headers, json=payload)
-            time.sleep(1)  # Add delay after deletion request
-            
-            # Log the request details
+            # Log the request details for debugging
+            logging.info(f"Sending delete request for chunk {i//chunk_size + 1}")
             logging.info(f"Request URL: {url}")
             logging.info(f"Payload: {json.dumps(payload, indent=2)}")
+            
+            response = requests.post(url, headers=headers, json=payload)
+            time.sleep(1)  # Add delay after deletion request
             
             if response.ok:
                 # Verify the removal by checking if endpoints still exist
                 verification_failures = []
                 for guid in chunk:
-                    verify_url = f"https://api.xdr.trendmicro.com/v3.0/endpointSecurity/endpoints/{guid}"
+                    verify_url = f"{API_URL}/{guid}"
                     try:
                         verify_response = requests.get(verify_url, headers=headers)
                         time.sleep(0.2)  # Add delay between verification requests
@@ -173,6 +199,10 @@ def main():
     log_file = setup_logging()
     logging.info("Starting endpoint cleanup process")
     
+    if args.dry_run:
+        logging.info("DRY RUN MODE ENABLED - No endpoints will be removed")
+        print("\n🔍 DRY RUN MODE - No endpoints will be removed")
+    
     # Try to get API key from environment variable first, then argument
     api_key = os.environ.get('TREND_MICRO_API_KEY')
     if not api_key and args.api_key:
@@ -192,7 +222,7 @@ def main():
     # Filter agents
     eligible_agents = []
     filtered_agents = []
-    agent_guids = []  # New list to store GUIDs
+    agent_guids = []
     
     # Process and log all agents (only to file)
     for agent in agents:
@@ -202,12 +232,15 @@ def main():
         last_connected = edr_sensor.get('lastConnectedDateTime', 'Unknown')
         agent_guid = agent.get('agentGuid', '')  # Get the GUID
         
-        if (endpoint_name.lower().startswith('ip-') and '-' in endpoint_name and 
-            edr_status.lower() == 'disconnected' and 
-            last_connected != 'Unknown'):
+        if (edr_status.lower() == 'disconnected' and last_connected != 'Unknown'):
             try:
                 last_connected_date = datetime.strptime(last_connected, "%Y-%m-%dT%H:%M:%S")
                 if last_connected_date < cutoff_date:
+                    agent_guid = agent.get('agentGuid', '')
+                    logging.debug(f"Found eligible agent: {endpoint_name}")
+                    logging.debug(f"GUID: {agent_guid}")
+                    logging.debug(f"Last Connected: {last_connected}")
+                    logging.debug(f"Status: {edr_status}")
                     eligible_agents.append(agent)
                     filtered_agents.append([endpoint_name, last_connected, edr_status])
                     agent_guids.append(agent_guid)  # Store the GUID
@@ -228,6 +261,8 @@ def main():
     summary += f"Not eligible: {len(agents) - len(eligible_agents)}\n"
     summary += f"Looking back {args.days} days (before {cutoff_date.strftime('%Y-%m-%d')})\n"
     summary += f"Detailed log file: {log_file}"
+    if args.dry_run:
+        summary += "\nDRY RUN MODE - No endpoints will be removed"
     
     # Log to file and print to terminal
     logging.info(summary)
@@ -241,6 +276,25 @@ def main():
     
     # Confirmation and removal process
     print(f"\nProceeding with {len(agent_guids)} eligible agents...")
+    
+    # In dry run mode, show what would be removed but don't ask for confirmation
+    if args.dry_run:
+        print("\n🔍 The following endpoints would be removed in a real run:")
+        for agent, guid in zip(filtered_agents, agent_guids):
+            print(f"- {agent[0]} (Last seen: {agent[1]}) [GUID: {guid}]")
+        print("\n✨ Dry run completed. Use the command without --dry-run to perform actual removal.")
+        
+        # Add section in log file for eligible agents
+        logging.info("\n=== Dry Run - Eligible Agents for Removal ===")
+        for agent, guid in zip(filtered_agents, agent_guids):
+            logging.info(f"Agent: {agent[0]}")
+            logging.info(f"    GUID: {guid}")
+            logging.info(f"    Last Connected: {agent[1]}")
+            logging.info(f"    Status: {agent[2]}")
+        logging.info(f"Total eligible agents for removal: {len(filtered_agents)}")
+        return
+    
+    # Normal run - proceed with confirmation and removal
     if confirm_removal(filtered_agents, agent_guids):
         print("\nProceeding with removal...")
         if remove_endpoints(API_KEY, agent_guids):
